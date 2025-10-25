@@ -11,19 +11,26 @@
 #include <thread>
 #include <iostream>
 
-constexpr uint32_t windowStartWidth = 600;
-constexpr uint32_t windowStartHeight = 600;
+#include <memory>
+
+struct PlayerTexture
+{
+    SDL_Texture *idleTex;
+    SDL_FRect srcIdle, destIdle;
+};
 
 struct AppContext
 {
     SDL_Window *window;
     SDL_Renderer *renderer;
-    SDL_Texture *messageTex, *imageTex;
-    SDL_FRect messageDest;
-
+    PlayerTexture *playerTexture;
     int iteration;
-
     SDL_AppResult app_quit = SDL_APP_CONTINUE;
+};
+
+struct Window
+{
+    uint32_t width, height;
 };
 
 SDL_AppResult SDL_Fail()
@@ -48,7 +55,8 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     }
 
     // create a window
-    SDL_Window *window = SDL_CreateWindow("Tiger Sample", windowStartWidth, windowStartHeight, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    auto winProps = std::make_unique<struct Window>(Window{.width = 600, .height = 600});
+    SDL_Window *window = SDL_CreateWindow("Tiger Sample", winProps->width, winProps->height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 
     if (not window)
     {
@@ -64,6 +72,9 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         return SDL_Fail();
     }
 
+    int logW = 640, logH = 320;
+    SDL_SetRenderLogicalPresentation(renderer, logW, logH, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+
     // load the font
 #if __ANDROID__
     std::filesystem::path basePath = ""; // on Android we do not want to use basepath. Instead, assets are available at the root directory.
@@ -76,36 +87,12 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     const std::filesystem::path basePath = basePathPtr;
 #endif
 
-    const auto fontPath = basePath / "bitcount.ttf";
-    TTF_Font *font = TTF_OpenFont(fontPath.string().c_str(), 28);
-    if (not font)
-    {
-        return SDL_Fail();
-    }
+    // load the idle
+    auto idle_surface = IMG_Load((basePath / "idle.png").string().c_str());
+    SDL_Texture *idleTexture = SDL_CreateTextureFromSurface(renderer, idle_surface);
 
-    // render the font to a surface
-    const std::string_view text = "Cute Tiger!";
-    SDL_Surface *surfaceMessage = TTF_RenderText_Solid(font, text.data(), text.length(), {200, 100, 100});
-
-    // make a texture from the surface
-    SDL_Texture *messageTex = SDL_CreateTextureFromSurface(renderer, surfaceMessage);
-
-    // we no longer need the font or the surface, so we can destroy those now.
-    TTF_CloseFont(font);
-    SDL_DestroySurface(surfaceMessage);
-
-    // load the SVG
-    auto svg_surface = IMG_Load((basePath / "gs_tiger.svg").string().c_str());
-    SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, svg_surface);
-    SDL_DestroySurface(svg_surface);
-
-    // get the on-screen dimensions of the text. this is necessary for rendering it
-    auto messageTexProps = SDL_GetTextureProperties(messageTex);
-    SDL_FRect text_rect{
-        .x = 0,
-        .y = 0,
-        .w = float(SDL_GetNumberProperty(messageTexProps, SDL_PROP_TEXTURE_WIDTH_NUMBER, 0)),
-        .h = float(SDL_GetNumberProperty(messageTexProps, SDL_PROP_TEXTURE_HEIGHT_NUMBER, 0))};
+    SDL_SetTextureScaleMode(idleTexture, SDL_SCALEMODE_NEAREST);
+    SDL_DestroySurface(idle_surface);
 
     // print some information about the window
     SDL_ShowWindow(window);
@@ -121,13 +108,29 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         }
     }
 
+    auto playerTexture = new PlayerTexture();
+    playerTexture->idleTex = idleTexture;
+
+    const SDL_FRect srcImageTex{
+        .x = 0,
+        .y = 0,
+        .w = 32,
+        .h = 32};
+
+    const SDL_FRect destImageTex{
+        .x = 0,
+        .y = 0,
+        .w = 32,
+        .h = 32};
+
+    playerTexture->srcIdle = srcImageTex;
+    playerTexture->destIdle = destImageTex;
+
     // set up the application data
     *appstate = new AppContext{
         .window = window,
         .renderer = renderer,
-        .messageTex = messageTex,
-        .imageTex = tex,
-        .messageDest = text_rect,
+        .playerTexture = playerTexture,
         .iteration = 0};
 
     SDL_SetRenderVSync(renderer, -1); // enable vysnc
@@ -168,21 +171,20 @@ SDL_AppResult SDL_AppIterate(void *appstate)
     auto time = SDL_GetTicks() / 1000.f;
 
     int seconds = static_cast<int>(std::round(time));
-    
+
     if (seconds > app->iteration)
     {
         std::cout << "time: " << static_cast<int>(std::round(time)) << std::endl;
         app->iteration++;
     }
 
-    SDL_Color backgroundColor = {.r = 255, .g = 255, .b = 255, .a = 255};
+    SDL_Color bgColor = {.r = 10, .g = 40, .b = 30, .a = 255};
 
-    SDL_SetRenderDrawColor(app->renderer, backgroundColor.r, backgroundColor.g, backgroundColor.b, SDL_ALPHA_OPAQUE);
+    SDL_SetRenderDrawColor(app->renderer, bgColor.r, bgColor.g, bgColor.b, SDL_ALPHA_OPAQUE);
     SDL_RenderClear(app->renderer);
 
     // Renderer uses the painter's algorithm to make the text appear above the image, we must render the image first.
-    SDL_RenderTexture(app->renderer, app->imageTex, NULL, NULL);
-    SDL_RenderTexture(app->renderer, app->messageTex, NULL, &app->messageDest);
+    SDL_RenderTexture(app->renderer, app->playerTexture->idleTex, &app->playerTexture->srcIdle, &app->playerTexture->destIdle);
 
     SDL_RenderPresent(app->renderer);
 
@@ -196,6 +198,7 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
     {
         SDL_DestroyRenderer(app->renderer);
         SDL_DestroyWindow(app->window);
+        SDL_DestroyTexture(app->playerTexture->idleTex);
 
         delete app;
     }
